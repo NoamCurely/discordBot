@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const { Client, GatewayIntentBits } = require('discord.js');
+const { exec } = require('child_process');
 
 const app = express();
 app.use(express.json());
@@ -13,122 +14,97 @@ const CHANNEL_ID = process.env.channel_id;
 const TWITCH_CLIENT_ID = process.env.twitch_client_id;
 const TWITCH_CLIENT_SECRET = process.env.twitch_client_secret;
 const TWITCH_USERNAME = process.env.twitch_username;
-const CALLBACK_URL = process.env.callback_url; // URL publique (ex: ngrok)
+let CALLBACK_URL = process.env.callback_url; // URL publique mise à jour par Ngrok
 let accessToken = '';
 
-// Initialisation du client Discord
+// Initialisation du bot Discord
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 // Fonction pour obtenir le jeton d'accès Twitch
 async function fetchTwitchAccessToken() {
-  const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
-    params: {
-      client_id: TWITCH_CLIENT_ID,
-      client_secret: TWITCH_CLIENT_SECRET,
-      grant_type: 'client_credentials',
-    },
-  });
-
-  accessToken = response.data.access_token;
-  console.log('Twitch Access Token obtenu');
-}
-
-// Fonction pour vérifier les souscriptions existantes
-async function checkExistingSubscriptions() {
   try {
-    const response = await axios.get(
-      'https://api.twitch.tv/helix/eventsub/subscriptions',
-      {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Client-Id': TWITCH_CLIENT_ID,
-        },
-      }
-    );
-    return response.data.data;
+    const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
+      params: {
+        client_id: TWITCH_CLIENT_ID,
+        client_secret: TWITCH_CLIENT_SECRET,
+        grant_type: 'client_credentials',
+      },
+    });
+
+    accessToken = response.data.access_token;
+    console.log('✅ Twitch Access Token obtenu');
   } catch (error) {
-    console.error('Erreur lors de la récupération des souscriptions :', error);
-    return [];
+    console.error('❌ Erreur lors de la récupération du token Twitch:', error.response?.data || error);
   }
 }
 
-// Fonction pour supprimer une souscription existante
-async function deleteSubscription(subscriptionId) {
-  try {
-    const response = await axios.delete(
-      `https://api.twitch.tv/helix/eventsub/subscriptions`,
-      {
-        data: {
-          id: subscriptionId,
-        },
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Client-Id': TWITCH_CLIENT_ID,
-        },
-      }
-    );
-    console.log('Souscription supprimée avec succès:', response.data);
-  } catch (error) {
-    console.error('Erreur lors de la suppression de la souscription :', error);
-  }
-}
-
+// Fonction pour récupérer l'ID du diffuseur Twitch
 async function getBroadcasterUserId() {
   try {
     const response = await axios.get('https://api.twitch.tv/helix/users', {
-      params: {
-        login: TWITCH_USERNAME, // Nom d'utilisateur Twitch
-      },
+      params: { login: TWITCH_USERNAME },
       headers: {
         'Client-Id': TWITCH_CLIENT_ID,
         'Authorization': `Bearer ${accessToken}`,
       },
     });
-    
-    const userId = response.data.data[0]?.id; // L'ID du diffuseur
+
+    const userId = response.data.data[0]?.id;
     if (userId) {
-      console.log(`ID du diffuseur ${TWITCH_USERNAME}: ${userId}`);
+      console.log(`✅ ID du diffuseur ${TWITCH_USERNAME}: ${userId}`);
       return userId;
     } else {
       throw new Error('Diffuseur non trouvé');
     }
   } catch (error) {
-    console.error('Erreur lors de la récupération de l\'ID du diffuseur :', error);
+    console.error('❌ Erreur lors de la récupération de l\'ID du diffuseur:', error.response?.data || error);
     return null;
   }
 }
 
+// Fonction pour supprimer toutes les souscriptions Twitch existantes
+async function clearExistingSubscriptions() {
+  try {
+    const response = await axios.get('https://api.twitch.tv/helix/eventsub/subscriptions', {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Client-Id': TWITCH_CLIENT_ID,
+      },
+    });
 
+    for (const sub of response.data.data) {
+      console.log(`🗑️ Suppression de la souscription: ${sub.id}`);
+      await axios.delete(`https://api.twitch.tv/helix/eventsub/subscriptions?id=${sub.id}`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Client-Id': TWITCH_CLIENT_ID,
+        },
+      });
+    }
+    console.log('✅ Toutes les souscriptions ont été supprimées.');
+  } catch (error) {
+    console.error('❌ Erreur lors de la suppression des souscriptions:', error.response?.data || error);
+  }
+}
+
+// Fonction pour s'abonner aux événements Twitch
 async function subscribeToTwitchEvents() {
-  const broadcasterUserId = await getBroadcasterUserId(); // Récupère l'ID du diffuseur
-  if (!broadcasterUserId) {
-    console.error("Impossible de récupérer l'ID du diffuseur.");
-    return;
-  }
+  const broadcasterUserId = await getBroadcasterUserId();
+  if (!broadcasterUserId) return;
 
-  // Vérifier les souscriptions existantes
-  const existingSubscriptions = await checkExistingSubscriptions();
-  const existingSubscription = existingSubscriptions.find(
-    (sub) => sub.condition.broadcaster_user_id === broadcasterUserId
-  );
+  await clearExistingSubscriptions();
 
-  if (existingSubscription) {
-    console.log('Souscription existante trouvée, suppression en cours...');
-    await deleteSubscription(existingSubscription.id);
-  }
-
-  // Créer une nouvelle souscription
   try {
     const response = await axios.post(
       'https://api.twitch.tv/helix/eventsub/subscriptions',
       {
         type: 'stream.online',
         version: '1',
-        condition: { broadcaster_user_id: broadcasterUserId }, // Utilise l'ID du diffuseur
+        condition: { broadcaster_user_id: broadcasterUserId },
         transport: {
           method: 'webhook',
           callback: CALLBACK_URL,
-          secret: process.env.twitch_webhook_secret, // Clé secrète pour valider la signature
+          secret: process.env.twitch_webhook_secret,
         },
       },
       {
@@ -139,49 +115,104 @@ async function subscribeToTwitchEvents() {
         },
       }
     );
-    console.log('Abonnement aux événements Twitch réussi:', response.data);
+    console.log('✅ Abonnement aux événements Twitch réussi:', response.data);
   } catch (error) {
-    console.error('Erreur lors de la souscription aux événements Twitch:', error.response.data);
+    console.error('❌ Erreur lors de la souscription aux événements Twitch:', error.response?.data || error);
   }
 }
 
-// Fonction pour gérer la validation du webhook (challenge)
 app.post('/webhook/twitch', async (req, res) => {
+  console.log('Webhook POST reçu', JSON.stringify(req.body, null, 2)); // Affiche la structure complète de la réponse de Twitch
+
   const { challenge, subscription, event } = req.body;
 
-  // Étape de validation de Twitch (vérification du challenge)
+  // Validation de l'URL du webhook (challenge envoyé par Twitch)
   if (challenge) {
-    console.log('Validation de Twitch reçue.');
-    return res.send(challenge); // Renvoi du challenge pour confirmer la connexion du webhook
+    console.log('🔗 Validation de Twitch reçue.');
+    return res.send(challenge);
   }
 
-  // Vérifie si l'événement correspond à un stream en ligne
-  if (subscription && event && event.type === 'stream.online') {
+  // Si la souscription est en statut "pending" (en attente de validation)
+  if (subscription && subscription.status === 'webhook_callback_verification_pending') {
+    console.log('🔗 Webhook est en attente de validation...');
+    return res.sendStatus(200); // Attends la validation de Twitch
+  }
+
+  // Si l'événement est de type "live" (stream en direct)
+  if (subscription && event && event.type === 'live') {
     console.log(`🔴 ${event.broadcaster_user_name} est en live !`);
 
-    // Envoi d'un message sur Discord
+    // Envoie la notification sur Discord
     const channel = client.channels.cache.get(CHANNEL_ID);
-
     if (channel) {
-      channel.send(
-        `🔴 **${event.broadcaster_user_name} est en live !**\nRegardez ici : https://twitch.tv/${event.broadcaster_user_name}`
-      );
+      channel.send(`🔴 **${event.broadcaster_user_name} est en live !**\n🎥 Regardez ici : https://twitch.tv/${event.broadcaster_user_login}`);
+    } else {
+      console.error("❌ Impossible de trouver le canal Discord.");
     }
+  } else {
+    console.log('❌ Aucun événement en direct détecté ou données manquantes:', subscription, event);
   }
 
-  res.sendStatus(200); // Réponse à Twitch pour confirmer la réception du message
+  res.sendStatus(200);
 });
 
-// Connexion du bot Discord et abonnement aux événements Twitch
+// Fonction pour vérifier si ngrok est déjà en cours d'exécution
+async function getNgrokUrl() {
+  try {
+    const { data } = await axios.get('http://localhost:4040/api/tunnels');
+    if (data.tunnels && data.tunnels.length > 0) {
+      return data.tunnels[0].public_url;
+    } else {
+      throw new Error('Aucun tunnel Ngrok actif trouvé.');
+    }
+  } catch (error) {
+    console.error('❌ Impossible de récupérer l\'URL de Ngrok:', error.message);
+    return null;
+  }
+}
+
+// Fonction pour lancer Ngrok si nécessaire
+async function startNgrokIfNeeded() {
+  let ngrokUrl = await getNgrokUrl();
+  if (!ngrokUrl) {
+    // Lancer Ngrok si aucun tunnel actif
+    console.log("Lancement de ngrok...");
+    exec('ngrok http 3000', (err, stdout, stderr) => {
+      if (err) {
+        console.error(`❌ Erreur lors du lancement de Ngrok: ${err.message}`);
+        return;
+      }
+      console.log(`🌍 Ngrok en cours d'exécution...`);
+    });
+
+    // Attendre 5 secondes pour que ngrok démarre
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    ngrokUrl = await getNgrokUrl();
+  }
+  return ngrokUrl;
+}
+
+// Lancer Ngrok et mettre à jour l'URL de callback
+startNgrokIfNeeded().then(async (url) => {
+  if (url) {
+    CALLBACK_URL = `${url}/webhook/twitch`;
+    console.log(`🚀 Nouvelle URL Webhook: ${CALLBACK_URL}`);
+
+    await fetchTwitchAccessToken();
+    await subscribeToTwitchEvents();
+  }
+});
+
+// Connexion au bot Discord
 client.once('ready', async () => {
-  console.log(`Bot connecté en tant que ${client.user.tag}`);
-  await fetchTwitchAccessToken();
-  await subscribeToTwitchEvents();
+  console.log(`✅ Bot connecté en tant que ${client.user.tag}`);
 });
 
-// Connexion du bot Discord
+// Démarrer le bot Discord
 client.login(DISCORD_TOKEN);
 
-// Lancer le serveur pour recevoir les notifications webhook
-app.listen(PORT, () => console.log(`Serveur webhook lancé sur le port ${PORT}`));
+// Lancer le serveur Express
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Serveur webhook lancé sur le port ${PORT}`);
+});
 
