@@ -144,11 +144,24 @@ app.post('/webhook/twitch', async (req, res) => {
 
     // Envoie la notification sur Discord
     const channel = client.channels.cache.get(CHANNEL_ID);
-    if (channel) {
+    /*if (channel) {
       channel.send(`🔴 **${event.broadcaster_user_name} est en live !**\n🎥 Regardez ici : https://twitch.tv/${event.broadcaster_user_login}`);
     } else {
       console.error("❌ Impossible de trouver le canal Discord.");
-    }
+    }*/
+    const channel = client.channels.cache.get(CHANNEL_ID);
+      if (channel) {
+        const streamTitle = event.title || "Live en cours !"; // Récupère le titre du live
+        const streamUrl = `https://www.twitch.tv/${event.broadcaster_user_login}`;
+
+        const message = `@everyone ${event.broadcaster_user_name} part en live Minecraft juste ici ${streamUrl} !\n` +
+                  `${streamTitle} @imozne_ !discord !config !setup`;
+
+        channel.send(message);
+      } else {
+          console.error("❌ Impossible de trouver le canal Discord.");
+        }
+
   } else {
     console.log('❌ Aucun événement en direct détecté ou données manquantes:', subscription, event);
   }
