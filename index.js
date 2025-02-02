@@ -143,7 +143,6 @@ app.post('/webhook/twitch', async (req, res) => {
     console.log(`🔴 ${event.broadcaster_user_name} est en live !`);
 
     // Envoie la notification sur Discord
-    const channel = client.channels.cache.get(CHANNEL_ID);
     /*if (channel) {
       channel.send(`🔴 **${event.broadcaster_user_name} est en live !**\n🎥 Regardez ici : https://twitch.tv/${event.broadcaster_user_login}`);
     } else {
