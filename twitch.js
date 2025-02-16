@@ -15,8 +15,10 @@ async function fetchTwitchAccessToken() {
 
     accessToken = response.data.access_token;
     console.log('✅ Twitch Access Token obtenu');
+    return accessToken;  // Retourne le token pour une utilisation immédiate
   } catch (error) {
     console.error('❌ Erreur lors de la récupération du token Twitch:', error.response?.data || error);
+    return null;
   }
 }
 
@@ -100,7 +102,11 @@ async function subscribeToTwitchEvents(callbackUrl) {
   }
 }
 
+// Exporte les éléments nécessaires
 module.exports = {
   fetchTwitchAccessToken,
+  getBroadcasterUserId,
+  clearExistingSubscriptions,
   subscribeToTwitchEvents,
+  accessToken, // Exporte l'accessToken pour une utilisation ailleurs
 };
