@@ -8,6 +8,8 @@ client.once('ready', () => {
   console.log(`✅ Bot connecté en tant que ${client.user.tag}`);
 });
 
+const roleId = process.env.role_id;
+
 function sendDiscordNotification(event) {
         const channel = client.channels.cache.get(CHANNEL_ID);
         if (channel) {
@@ -25,7 +27,7 @@ function sendDiscordNotification(event) {
             .setImage(`https://static-cdn.jtvnw.net/previews-ttv/live_user_${event.broadcaster_user_login}-640x360.jpg`);
       
           // Envoi du message avec l'embed
-          channel.send({ content: '<@&1340682908188541070>', embeds: [embed] });
+          channel.send({ content: '<@&${roleId}>', embeds: [embed] });
         } else {
           console.error("❌ Impossible de trouver le canal Discord.");
         }
