@@ -1,13 +1,16 @@
 const axios = require('axios');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 
 async function getNgrokUrl() {
   try {
-    const { data } = await axios.get('http://localhost:4040/api/tunnels');
+    console.log("🔍 Vérification de l'URL Ngrok...");
+    const { data } = await axios.get('http://127.0.0.1:4040/api/tunnels'); // Utiliser IPv4
     if (data.tunnels && data.tunnels.length > 0) {
+      console.log("✅ Ngrok trouvé:", data.tunnels[0].public_url);
       return data.tunnels[0].public_url;
     } else {
-      throw new Error('Aucun tunnel Ngrok actif trouvé.');
+      console.warn("⚠️ Aucun tunnel Ngrok actif trouvé.");
+      return null;
     }
   } catch (error) {
     console.error('❌ Impossible de récupérer l\'URL de Ngrok:', error.message);
@@ -17,19 +20,26 @@ async function getNgrokUrl() {
 
 async function startNgrokIfNeeded() {
   let ngrokUrl = await getNgrokUrl();
+  
   if (!ngrokUrl) {
-    console.log("Lancement de ngrok...");
-    exec('ngrok http 3000', (err, stdout, stderr) => {
-      if (err) {
-        console.error(`❌ Erreur lors du lancement de Ngrok: ${err.message}`);
-        return;
-      }
-      console.log(`🌍 Ngrok en cours d'exécution...`);
+    console.log("🚀 Lancement de Ngrok...");
+    
+    const ngrokProcess = spawn('ngrok', ['http', '3000'], {
+      detached: true,
+      stdio: 'ignore'
     });
 
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    ngrokProcess.unref(); // Laisse tourner Ngrok en arrière-plan
+
+    console.log("⏳ Attente que Ngrok soit prêt...");
+    await new Promise(resolve => setTimeout(resolve, 5000)); // Attendre 5s
+
     ngrokUrl = await getNgrokUrl();
+    if (!ngrokUrl) {
+      console.error("❌ Ngrok n'a pas réussi à démarrer.");
+    }
   }
+  
   return ngrokUrl;
 }
 
