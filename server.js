@@ -1,100 +1,120 @@
-require('dotenv').config();
 const express = require('express');
+const fs = require('fs');
+const connectDB = require('./connection');
+const config = require('./config');
 const { startNgrokIfNeeded } = require('./ngrok');
-const { fetchTwitchAccessToken, subscribeToTwitchEvents, getBroadcasterUserId } = require('./twitch');
-const { sendDiscordNotification } = require('./discord');
-const { PORT } = require('./config');
-const axios = require('axios');
-const { TWITCH_CLIENT_ID } = require('./config');
+const { fetchTwitchAccessToken, subscribeToTwitchEvents, updateStreamers } = require('./twitch');
+const { handleTwitchWebhook } = require('./webhook-controller');
 
-// Initialisation du serveur Express
 const app = express();
+
+// Middleware pour parser le JSON
 app.use(express.json());
 
-// Route pour le webhook Twitch
-app.post('/webhook/twitch', async (req, res) => {
-  console.log('Webhook POST reçu', JSON.stringify(req.body, null, 2));
-
-  const { challenge, subscription, event } = req.body;
-
-  // Validation de l'URL du webhook (challenge envoyé par Twitch)
-  if (challenge) {
-    console.log('🔗 Validation de Twitch reçue.');
-    return res.send(challenge);
-  }
-
-  // Si la souscription est en attente de validation
-  if (subscription && subscription.status === 'webhook_callback_verification_pending') {
-    console.log('🔗 Webhook est en attente de validation...');
-    return res.sendStatus(200);
-  }
-
-  // Si l'événement est de type "live" (stream en direct)
-  if (subscription && event && event.type === 'live') {
-    console.log(`🔴 ${event.broadcaster_user_name} est en live !`);
-
-    // Récupère l'accessToken
-    const accessToken = await fetchTwitchAccessToken();
-
-    if (!accessToken) {
-      console.error('❌ Impossible de récupérer le token Twitch');
-      return res.sendStatus(500);
-    }
-
-    // Récupère les détails supplémentaires du stream
-    const streamDetails = await getStreamDetails(event.broadcaster_user_id, accessToken);
-    if (streamDetails) {
-      event.game_name = streamDetails.game_name; // Ajoute le nom du jeu à l'événement
-      event.title = streamDetails.title;
-    }
-
-    sendDiscordNotification(event); // Envoie la notification sur Discord
-  } else {
-    console.log('❌ Aucun événement en direct détecté ou données manquantes:', subscription, event);
-  }
-
-  res.sendStatus(200);
-});
-
-// Fonction pour récupérer les détails du stream
-async function getStreamDetails(broadcasterUserId, accessToken) {
+// Récupérer la liste des streamers
+function getStreamers() {
   try {
-    const response = await axios.get('https://api.twitch.tv/helix/streams', {
-      params: { user_id: broadcasterUserId },
-      headers: {
-        'Client-Id': TWITCH_CLIENT_ID,
-        'Authorization': `Bearer ${accessToken}`,
-      },
-    });
-
-    if (response.data.data.length > 0) {
-      return response.data.data[0]; // Retourne les détails du stream
-    } else {
-      throw new Error('Aucun stream en cours trouvé.');
-    }
+    const data = fs.readFileSync('./index.json', 'utf8');
+    const { twitch_username } = JSON.parse(data);
+    return twitch_username || [];
   } catch (error) {
-    console.error('❌ Erreur lors de la récupération des détails du stream:', error.response?.data || error);
-    return null;
+    console.error('❌ Erreur lors de la lecture de index.json:', error);
+    return [];
   }
 }
 
-// Fonction pour démarrer l'application
-async function startApp() {
-  // Démarre Ngrok et récupère l'URL publique
-  const ngrokUrl = await startNgrokIfNeeded();
-  if (ngrokUrl) {
-    const callbackUrl = `${ngrokUrl}/webhook/twitch`;
-    console.log(`🚀 Nouvelle URL Webhook: ${callbackUrl}`);
+// Route pour le webhook Twitch
+app.post('/webhook/twitch', handleTwitchWebhook);
 
-    // Récupère le token Twitch et s'abonne aux événements
-    await fetchTwitchAccessToken();
-    await subscribeToTwitchEvents(callbackUrl);
+// Route pour ajouter un nouveau streamer
+app.post('/add-streamer', async (req, res) => {
+  const { username } = req.body;
+  if (!username) {
+    return res.status(400).send('Le nom d\'utilisateur est requis.');
   }
 
-  // Démarre le serveur Express
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Serveur webhook lancé sur le port ${PORT}`);
+  try {
+    const streamers = getStreamers();
+    const updatedStreamers = updateStreamers('add', username, streamers);
+    
+    // Réabonnement aux webhooks pour inclure le nouveau streamer
+    const callbackUrl = `${global.baseUrl}/webhook/twitch`;
+    await subscribeToTwitchEvents(callbackUrl, updatedStreamers);
+    
+    res.status(200).send(`Streamer ${username} ajouté avec succès.`);
+  } catch (error) {
+    console.error('❌ Erreur lors de l\'ajout du streamer:', error);
+    res.status(500).send('Erreur lors de l\'ajout du streamer.');
+  }
+});
+
+// Route pour supprimer un streamer
+app.delete('/remove-streamer', async (req, res) => {
+  const { username } = req.body;
+  if (!username) {
+    return res.status(400).send('Le nom d\'utilisateur est requis.');
+  }
+
+  try {
+    const streamers = getStreamers();
+    const updatedStreamers = updateStreamers('remove', username, streamers);
+    res.status(200).send(`Streamer ${username} supprimé avec succès.`);
+  } catch (error) {
+    console.error('❌ Erreur lors de la suppression du streamer:', error);
+    res.status(500).send('Erreur lors de la suppression du streamer.');
+  }
+});
+
+// Route pour vérifier l'état du serveur
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
   });
+});
+
+// Fonction pour démarrer l'application
+async function startApp() {
+  try {
+    // Connecter à la base de données
+    await connectDB();
+    
+    // Démarre Ngrok et récupère l'URL publique
+    const ngrokUrl = await startNgrokIfNeeded();
+    const baseUrl = ngrokUrl || config.BASE_URL;
+    
+    if (!baseUrl) {
+        console.log(config.BASE_URL);
+      throw new Error('❌ Aucune URL de base disponible. Configurez BASE_URL ou activez Ngrok.');
+    }
+    
+    // Stocke l'URL de base pour une utilisation globale
+    global.baseUrl = baseUrl;
+    
+    // Construit l'URL de callback pour le webhook
+    const callbackUrl = `${baseUrl}/webhook/twitch`;
+    console.log(`🚀 Nouvelle URL Webhook: ${callbackUrl}`);
+
+    // Récupère le token Twitch
+    const accessToken = await fetchTwitchAccessToken();
+    if (!accessToken) {
+      throw new Error('❌ Impossible de récupérer le token Twitch');
+    }
+
+    // S'abonne aux événements Twitch
+    const streamers = getStreamers();
+    await subscribeToTwitchEvents(callbackUrl, streamers);
+
+    // Démarre le serveur Express
+    app.listen(config.PORT, '0.0.0.0', () => {
+      console.log(`✅ Serveur webhook lancé sur le port ${config.PORT}`);
+      console.log(`🌐 URL de base: ${baseUrl}`);
+    });
+  } catch (error) {
+    console.error('❌ Erreur lors du démarrage de l\'application:', error.message);
+    process.exit(1); // Quitte l'application en cas d'erreur critique
+  }
 }
 
 // Démarre l'application
